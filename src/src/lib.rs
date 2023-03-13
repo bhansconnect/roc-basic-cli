@@ -18,9 +18,20 @@ use std::process::Command;
 use std::time::Duration;
 
 use bumpalo::Bump;
+use rustyline::completion::FilenameCompleter;
+use rustyline::error::ReadlineError;
+use rustyline::hint::HistoryHinter;
+use rustyline::{
+    Completer, CompletionType, Config, Editor, Helper, Highlighter, Hinter, Validator,
+};
 
 use file_glue::ReadErr;
 use file_glue::WriteErr;
+
+#[cfg(target_os = "macos")]
+static EXTENSION: &str = "dylib";
+#[cfg(target_os = "linux")]
+static EXTENSION: &str = "so.1.0";
 
 thread_local!(static BUMP: RefCell<Bump> = RefCell::new(Bump::new()));
 
@@ -44,17 +55,50 @@ extern "C" {
     fn size_Fx_result() -> i64;
 }
 
+#[derive(Helper, Completer, Hinter, Highlighter, Validator)]
+struct RustyLineHelper {
+    #[rustyline(Completer)]
+    completer: FilenameCompleter,
+    #[rustyline(Hinter)]
+    hinter: HistoryHinter,
+}
+
 #[no_mangle]
 pub extern "C" fn rust_main() {
     // Disable panic printout.
     std::panic::set_hook(Box::new(|_| {}));
 
+    let config = Config::builder()
+        .history_ignore_space(true)
+        .completion_type(CompletionType::List)
+        .build();
+    let helper = RustyLineHelper {
+        completer: FilenameCompleter::new(),
+        hinter: HistoryHinter {},
+    };
+    let mut rl = Editor::with_config(config).unwrap();
+    rl.set_helper(Some(helper));
+    _ = rl.load_history("/tmp/history.txt");
     loop {
         // Request input.
-        let mut input = String::new();
-        print!("Enter app to run with args\n > ");
-        let _ = std::io::stdout().flush();
-        std::io::stdin().read_line(&mut input).unwrap();
+
+        let readline = rl.readline(">> ");
+        let input = match readline {
+            Ok(line) => {
+                _ = rl.add_history_entry(line.as_str());
+                line
+            }
+            Err(ReadlineError::Interrupted) => {
+                break;
+            }
+            Err(ReadlineError::Eof) => {
+                break;
+            }
+            Err(err) => {
+                println!("Readline hit unexpected error: {:?}", err);
+                break;
+            }
+        };
         println!("");
 
         // Process args.
@@ -93,7 +137,10 @@ pub extern "C" fn rust_main() {
             println!("\n\n");
             continue;
         }
-        dbg!(stdout);
+        let (_, output_file) = stdout.rsplit_once(' ').expect("Failed to parse roc output");
+        let output_file = output_file.trim();
+        let output_file = Path::new(output_file).with_extension(EXTENSION);
+        dbg!(output_file);
 
         // Load plugin.
 
@@ -129,6 +176,7 @@ pub extern "C" fn rust_main() {
         }
         println!("\n");
     }
+    _ = rl.save_history("/tmp/history.txt");
 }
 
 #[no_mangle]
