@@ -632,3 +632,85 @@ fn toRocReadError(err: std::io::Error) -> file_glue::ReadErr {
         _ => file_glue::ReadErr::Unsupported,
     }
 }
+
+///
+/// Used statics to keep functions in the binary.
+///
+
+#[used]
+pub static ROC_ALLOC: unsafe extern "C" fn(usize, u32) -> *mut c_void = roc_alloc;
+#[used]
+pub static ROC_REALLOC: unsafe extern "C" fn(*mut c_void, usize, usize, u32) -> *mut c_void =
+    roc_realloc;
+#[used]
+pub static ROC_DEALLOC: unsafe extern "C" fn(*mut c_void, u32) = roc_dealloc;
+#[used]
+pub static ROC_PANIC: for<'r> unsafe extern "C" fn(&'r RocStr, u32) = roc_panic;
+#[used]
+pub static ROC_MEMCPY: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> *mut c_void =
+    roc_memcpy;
+#[used]
+pub static ROC_MEMSET: unsafe extern "C" fn(*mut c_void, i32, usize) -> *mut c_void = roc_memset;
+
+#[used]
+#[cfg(unix)]
+pub static ROC_GETPPID: unsafe extern "C" fn() -> i32 = roc_getppid;
+#[used]
+#[cfg(unix)]
+pub static ROC_MMAP: unsafe extern "C" fn(*mut c_void, usize, i32, i32, i32, i64) -> *mut c_void =
+    roc_mmap;
+#[used]
+#[cfg(unix)]
+pub static ROC_SHM_OPEN: unsafe extern "C" fn(*const i8, i32, u32) -> i32 = roc_shm_open;
+
+#[used]
+pub static ROC_FX_ENVDICT: extern "C" fn() -> RocDict<RocStr, RocStr> = roc_fx_envDict;
+#[used]
+pub static ROC_FX_ARGS: extern "C" fn() -> RocList<RocStr> = roc_fx_args;
+#[used]
+pub static ROC_FX_ENVVAR: for<'r> extern "C" fn(&'r RocStr) -> RocResult<RocStr, ()> =
+    roc_fx_envVar;
+#[used]
+pub static ROC_FX_SETCWD: for<'r> extern "C" fn(&'r RocList<u8>) -> RocResult<(), ()> =
+    roc_fx_setCwd;
+#[used]
+pub static ROC_FX_PROCESSEXIT: extern "C" fn(u8) = roc_fx_processExit;
+#[used]
+pub static ROC_FX_EXEPATH: for<'r> extern "C" fn(&'r RocStr) -> RocResult<RocList<u8>, ()> =
+    roc_fx_exePath;
+#[used]
+pub static ROC_FX_STDINLINE: extern "C" fn() -> RocResult<RocStr, ()> = roc_fx_stdinLine;
+#[used]
+pub static ROC_FX_STDOUTLINE: for<'r> extern "C" fn(&'r RocStr) = roc_fx_stdoutLine;
+#[used]
+pub static ROC_FX_STDOUTWRITE: for<'r> extern "C" fn(&'r RocStr) = roc_fx_stdoutWrite;
+#[used]
+pub static ROC_FX_STDERRLINE: for<'r> extern "C" fn(&'r RocStr) = roc_fx_stderrLine;
+#[used]
+pub static ROC_FX_STDERRWRITE: for<'r> extern "C" fn(&'r RocStr) = roc_fx_stderrWrite;
+#[used]
+pub static ROC_FX_FILEWRITEUTF8: for<'r, 's> extern "C" fn(
+    &'r RocList<u8>,
+    &'s RocStr,
+) -> RocResult<(), WriteErr> = roc_fx_fileWriteUtf8;
+#[used]
+pub static ROC_FX_FILEWRITEBYTES: for<'r, 's> extern "C" fn(
+    &'r RocList<u8>,
+    &'s RocList<u8>,
+) -> RocResult<(), WriteErr> = roc_fx_fileWriteBytes;
+#[used]
+pub static ROC_FX_FILEREADBYTES: for<'r> extern "C" fn(
+    &'r RocList<u8>,
+) -> RocResult<RocList<u8>, ReadErr> = roc_fx_fileReadBytes;
+#[used]
+pub static ROC_FX_FILEDELETE: for<'r> extern "C" fn(&'r RocList<u8>) -> RocResult<(), ReadErr> =
+    roc_fx_fileDelete;
+#[used]
+pub static ROC_FX_CWD: extern "C" fn() -> RocList<u8> = roc_fx_cwd;
+#[used]
+pub static ROC_FX_DIRLIST: for<'r> extern "C" fn(
+    &'r RocList<u8>,
+) -> RocResult<RocList<RocList<u8>>, WriteErr> = roc_fx_dirList;
+#[used]
+pub static ROC_FX_SENDREQUEST: for<'r> extern "C" fn(&'r glue::Request) -> glue::Response =
+    roc_fx_sendRequest;

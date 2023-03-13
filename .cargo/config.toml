@@ -1,3 +1,5 @@
-[target.'cfg(not(target = "wasm32-unknown-unknown"))']
-# Lazy way to make sure all symbols are in the final binary.
-rustflags = ["-Clink-dead-code"]
+[target.'cfg(target_os = "linux")']
+# Export `roc_*` symbols in linux executable. This is used for glue.
+# On MacOS, these seem to be exported by default.
+# Windows still needs to be tested.
+rustflags = ["-Clink-args=-Wl,--export-dynamic-symbol,roc_*"]
