@@ -316,8 +316,9 @@ pub extern "C" fn roc_fx_setCwd(roc_path: &RocList<u8>) -> RocResult<(), ()> {
 }
 
 #[no_mangle]
-pub extern "C" fn roc_fx_processExit(exit_code: u8) {
-    panic!("Process exited with code: {}", exit_code);
+pub unsafe extern "C" fn roc_fx_processExit(exit_code: u8) {
+    MSG.with(|msg| *msg.borrow_mut() = format!("Process exited with code: {}", exit_code));
+    longjmp(JMPBUF.as_mut_ptr(), 1);
 }
 
 #[no_mangle]
@@ -674,7 +675,7 @@ pub static ROC_FX_ENVVAR: for<'r> extern "C" fn(&'r RocStr) -> RocResult<RocStr,
 pub static ROC_FX_SETCWD: for<'r> extern "C" fn(&'r RocList<u8>) -> RocResult<(), ()> =
     roc_fx_setCwd;
 #[used]
-pub static ROC_FX_PROCESSEXIT: extern "C" fn(u8) = roc_fx_processExit;
+pub static ROC_FX_PROCESSEXIT: unsafe extern "C" fn(u8) = roc_fx_processExit;
 #[used]
 pub static ROC_FX_EXEPATH: for<'r> extern "C" fn(&'r RocStr) -> RocResult<RocList<u8>, ()> =
     roc_fx_exePath;
