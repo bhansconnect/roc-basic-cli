@@ -17,11 +17,11 @@ use std::process::Command;
 use std::time::Duration;
 
 use bumpalo::Bump;
-use rustyline::completion::FilenameCompleter;
+use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::hint::HistoryHinter;
 use rustyline::{
-    Completer, CompletionType, Config, Editor, Helper, Highlighter, Hinter, Validator,
+    CompletionType, Config, Context, Editor, Helper, Highlighter, Hinter, Result, Validator,
 };
 use setjmp::{jmp_buf, longjmp, setjmp};
 
@@ -44,12 +44,31 @@ thread_local!(static MSG: RefCell<String> = RefCell::new(String::new()));
 
 thread_local!(static ARGS: RefCell<Vec<String>> = RefCell::new(vec![]));
 
-#[derive(Helper, Completer, Hinter, Highlighter, Validator)]
-struct RustyLineHelper {
-    #[rustyline(Completer)]
+#[derive(Helper, Hinter, Highlighter, Validator)]
+struct RustyLineHelper<'a> {
     completer: FilenameCompleter,
     #[rustyline(Hinter)]
     hinter: HistoryHinter,
+    extension: &'a OsStr,
+}
+
+impl<'a> Completer for RustyLineHelper<'a> {
+    type Candidate = Pair;
+
+    fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Result<(usize, Vec<Pair>)> {
+        self.completer.complete_path(line, pos).map(|(pos, pairs)| {
+            (
+                pos,
+                pairs
+                    .into_iter()
+                    .filter(|pair| {
+                        let path = Path::new(&pair.replacement);
+                        path.is_dir() || path.extension() == Some(self.extension)
+                    })
+                    .collect(),
+            )
+        })
+    }
 }
 
 #[no_mangle]
@@ -58,9 +77,11 @@ pub extern "C" fn rust_main() {
         .history_ignore_space(true)
         .completion_type(CompletionType::List)
         .build();
+    let roc_extension = OsStr::new("roc");
     let helper = RustyLineHelper {
         completer: FilenameCompleter::new(),
         hinter: HistoryHinter {},
+        extension: &roc_extension,
     };
     let mut rl = Editor::with_config(config).unwrap();
     rl.set_helper(Some(helper));
@@ -104,7 +125,7 @@ pub extern "C" fn rust_main() {
             println!("Could not find input file\n\n");
             continue;
         }
-        if input_path.extension() != Some(OsStr::new("roc")) {
+        if input_path.extension() != Some(roc_extension) {
             println!("Expected input file to have the `.roc` extension\n\n");
             continue;
         }
