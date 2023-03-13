@@ -1,0 +1,3 @@
+[target.'cfg(not(target = "wasm32-unknown-unknown"))']
+# Lazy way to make sure all symbols are in the final binary.
+rustflags = ["-Clink-dead-code"]

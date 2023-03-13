@@ -4,7 +4,6 @@ mod file_glue;
 mod glue;
 
 use core::alloc::Layout;
-use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use glue::Metadata;
 use roc_std::{RocDict, RocList, RocResult, RocStr};
@@ -25,6 +24,8 @@ use rustyline::{
     Completer, CompletionType, Config, Editor, Helper, Highlighter, Hinter, Validator,
 };
 
+use libc::{c_char, c_int, c_uint, c_void, mode_t, off_t, pid_t, size_t};
+
 use file_glue::ReadErr;
 use file_glue::WriteErr;
 
@@ -36,24 +37,6 @@ static EXTENSION: &str = "so.1.0";
 thread_local!(static BUMP: RefCell<Bump> = RefCell::new(Bump::new()));
 
 thread_local!(static ARGS: RefCell<Vec<String>> = RefCell::new(vec![]));
-
-extern "C" {
-    #[link_name = "roc__mainForHost_1_exposed_generic"]
-    fn roc_main(output: *mut u8);
-
-    #[link_name = "roc__mainForHost_size"]
-    fn roc_main_size() -> i64;
-
-    #[link_name = "roc__mainForHost_1__Fx_caller"]
-    fn call_Fx(flags: *const u8, closure_data: *const u8, output: *mut u8);
-
-    #[allow(dead_code)]
-    #[link_name = "roc__mainForHost_1__Fx_size"]
-    fn size_Fx() -> i64;
-
-    #[link_name = "roc__mainForHost_1__Fx_result_size"]
-    fn size_Fx_result() -> i64;
-}
 
 #[derive(Helper, Completer, Hinter, Highlighter, Validator)]
 struct RustyLineHelper {
@@ -137,12 +120,37 @@ pub extern "C" fn rust_main() {
             println!("\n\n");
             continue;
         }
-        let (_, output_file) = stdout.rsplit_once(' ').expect("Failed to parse roc output");
-        let output_file = output_file.trim();
-        let output_file = Path::new(output_file).with_extension(EXTENSION);
-        dbg!(output_file);
+        let (_, roc_lib_path) = stdout.rsplit_once(' ').expect("Failed to parse roc output");
+        let roc_lib_path = roc_lib_path.trim();
+        let roc_lib_path = Path::new(roc_lib_path).with_extension(EXTENSION);
 
         // Load plugin.
+        let lib = unsafe { libloading::Library::new(&roc_lib_path) };
+        if let Err(err) = lib {
+            println!("Failed to load generated roc plugin: {:?}\n\n", err);
+            continue;
+        }
+        let lib = lib.unwrap();
+
+        // Load needed app symbols.
+        let roc_main: libloading::Symbol<unsafe extern "C" fn(output: *mut u8)> = unsafe {
+            lib.get(b"roc__mainForHost_1_exposed_generic")
+                .expect("failed to load plugin functions")
+        };
+        let roc_main_size: libloading::Symbol<unsafe extern "C" fn() -> i64> = unsafe {
+            lib.get(b"roc__mainForHost_size")
+                .expect("failed to load plugin functions")
+        };
+        let call_fx: libloading::Symbol<
+            unsafe extern "C" fn(flags: *const u8, closure_data: *const u8, output: *mut u8),
+        > = unsafe {
+            lib.get(b"roc__mainForHost_1__Fx_caller")
+                .expect("failed to load plugin functions")
+        };
+        let size_fx_result: libloading::Symbol<unsafe extern "C" fn() -> i64> = unsafe {
+            lib.get(b"roc__mainForHost_1__Fx_result_size")
+                .expect("failed to load plugin functions")
+        };
 
         // Setup new bumpalo bump for memory allocations.
         BUMP.with(|bump| {
@@ -153,17 +161,27 @@ pub extern "C" fn rust_main() {
 
         // Run app with calls to plugin.
         let res = std::panic::catch_unwind(|| {
-            let size = unsafe { roc_main_size() } as usize;
-            let layout = Layout::array::<u8>(size).unwrap();
-
             unsafe {
-                let buffer = BUMP
-                    .with(|bump| bump.borrow().alloc_layout(layout))
+                let main_size = roc_main_size() as usize;
+                let main_layout = Layout::array::<u8>(main_size).unwrap();
+                let main_buffer = BUMP
+                    .with(|bump| bump.borrow().alloc_layout(main_layout))
                     .as_ptr();
 
-                roc_main(buffer);
+                roc_main(main_buffer);
 
-                call_the_closure(buffer);
+                let closure_size = size_fx_result() as usize;
+                let closure_layout = Layout::array::<u8>(closure_size).unwrap();
+                let closure_buffer = BUMP
+                    .with(|bump| bump.borrow().alloc_layout(closure_layout))
+                    .as_ptr();
+
+                call_fx(
+                    // This flags pointer will never get dereferenced
+                    MaybeUninit::uninit().as_ptr(),
+                    main_buffer,
+                    closure_buffer,
+                );
             }
         });
         if let Err(x) = res {
@@ -178,6 +196,10 @@ pub extern "C" fn rust_main() {
     }
     _ = rl.save_history("/tmp/history.txt");
 }
+
+///
+/// Roc required library functions.
+///
 
 #[no_mangle]
 pub unsafe extern "C" fn roc_alloc(size: usize, alignment: u32) -> *mut c_void {
@@ -217,31 +239,27 @@ pub unsafe extern "C" fn roc_panic(msg: &RocStr, _tag_id: u32) {
 
 #[cfg(unix)]
 #[no_mangle]
-pub unsafe extern "C" fn roc_getppid() -> libc::pid_t {
+pub unsafe extern "C" fn roc_getppid() -> pid_t {
     libc::getppid()
 }
 
 #[cfg(unix)]
 #[no_mangle]
 pub unsafe extern "C" fn roc_mmap(
-    addr: *mut libc::c_void,
-    len: libc::size_t,
-    prot: libc::c_int,
-    flags: libc::c_int,
-    fd: libc::c_int,
-    offset: libc::off_t,
-) -> *mut libc::c_void {
+    addr: *mut c_void,
+    len: size_t,
+    prot: c_int,
+    flags: c_int,
+    fd: c_int,
+    offset: off_t,
+) -> *mut c_void {
     libc::mmap(addr, len, prot, flags, fd, offset)
 }
 
 #[cfg(unix)]
 #[no_mangle]
-pub unsafe extern "C" fn roc_shm_open(
-    name: *const libc::c_char,
-    oflag: libc::c_int,
-    mode: libc::mode_t,
-) -> libc::c_int {
-    libc::shm_open(name, oflag, mode as libc::c_uint)
+pub unsafe extern "C" fn roc_shm_open(name: *const c_char, oflag: c_int, mode: mode_t) -> c_int {
+    libc::shm_open(name, oflag, mode as c_uint)
 }
 
 #[no_mangle]
@@ -254,20 +272,9 @@ pub unsafe extern "C" fn roc_memset(dst: *mut c_void, c: i32, n: usize) -> *mut 
     libc::memset(dst, c, n)
 }
 
-unsafe fn call_the_closure(closure_data_ptr: *const u8) -> u8 {
-    let size = size_Fx_result() as usize;
-    let layout = Layout::array::<u8>(size).unwrap();
-    let buffer = BUMP.with(|bump| bump.borrow().alloc_layout(layout));
-
-    call_Fx(
-        // This flags pointer will never get dereferenced
-        MaybeUninit::uninit().as_ptr(),
-        closure_data_ptr,
-        buffer.as_ptr(),
-    );
-
-    0
-}
+///
+/// Effects
+///
 
 #[no_mangle]
 pub extern "C" fn roc_fx_envDict() -> RocDict<RocStr, RocStr> {
