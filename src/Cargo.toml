@@ -11,7 +11,7 @@ path = "src/lib.rs"
 crate-type = ["staticlib", "rlib"]
 
 [[bin]]
-name = "host"
+name = "cli-runner"
 path = "src/main.rs"
 
 [dependencies]
