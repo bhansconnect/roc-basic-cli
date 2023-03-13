@@ -186,11 +186,11 @@ pub extern "C" fn rust_main() {
         });
         if let Err(x) = res {
             if let Some(string) = x.downcast_ref::<String>() {
-                println!("Plugin crashed with message:\t{}\n", string);
+                println!("\nPlugin crashed with message:\n\t{}\n", string);
             } else {
-                println!("Plugin crashed with unknown type:\t{:?}\n", x.type_id());
+                println!("\nPlugin crashed with unknown type: {:?}\n", x.type_id());
             }
-            println!("Cleaning up allocations and continuing.")
+            println!("Cleaning up allocations and continuing...")
         }
         println!("\n");
     }
