@@ -23,6 +23,7 @@ use rustyline::hint::HistoryHinter;
 use rustyline::{
     Completer, CompletionType, Config, Editor, Helper, Highlighter, Hinter, Validator,
 };
+use setjmp::{jmp_buf, longjmp, setjmp};
 
 use libc::{c_char, c_int, c_uint, c_void, mode_t, off_t, pid_t, size_t};
 
@@ -34,7 +35,12 @@ static EXTENSION: &str = "dylib";
 #[cfg(target_os = "linux")]
 static EXTENSION: &str = "so.1.0";
 
+// JMPBUF can not be wrapped in a RefCell, it will end up breaking rust.
+// Instead use the less safe direct `static mut`.
+static mut JMPBUF: MaybeUninit<jmp_buf> = MaybeUninit::uninit();
+
 thread_local!(static BUMP: RefCell<Bump> = RefCell::new(Bump::new()));
+thread_local!(static MSG: RefCell<String> = RefCell::new(String::new()));
 
 thread_local!(static ARGS: RefCell<Vec<String>> = RefCell::new(vec![]));
 
@@ -48,9 +54,6 @@ struct RustyLineHelper {
 
 #[no_mangle]
 pub extern "C" fn rust_main() {
-    // Disable panic printout.
-    std::panic::set_hook(Box::new(|_| {}));
-
     let config = Config::builder()
         .history_ignore_space(true)
         .completion_type(CompletionType::List)
@@ -152,7 +155,7 @@ pub extern "C" fn rust_main() {
                 .expect("failed to load plugin functions")
         };
 
-        // Setup new bumpalo bump for memory allocations.
+        // Re-setup arena and jump buffer.
         BUMP.with(|bump| {
             bump.borrow_mut().reset();
             // Set arbitrary limit for processes of 1MB.
@@ -160,38 +163,30 @@ pub extern "C" fn rust_main() {
         });
 
         // Run app with calls to plugin.
-        let res = std::panic::catch_unwind(|| {
-            unsafe {
-                let main_size = roc_main_size() as usize;
-                let main_layout = Layout::array::<u8>(main_size).unwrap();
-                let main_buffer = BUMP
-                    .with(|bump| bump.borrow().alloc_layout(main_layout))
-                    .as_ptr();
+        unsafe {
+            JMPBUF = MaybeUninit::uninit();
+            if setjmp(JMPBUF.as_mut_ptr()) == 0 {
+                let main_buffer = roc_alloc(roc_main_size() as usize, 8) as _;
+                let closure_buffer = roc_alloc(size_fx_result() as usize, 8) as _;
 
                 roc_main(main_buffer);
-
-                let closure_size = size_fx_result() as usize;
-                let closure_layout = Layout::array::<u8>(closure_size).unwrap();
-                let closure_buffer = BUMP
-                    .with(|bump| bump.borrow().alloc_layout(closure_layout))
-                    .as_ptr();
-
                 call_fx(
                     // This flags pointer will never get dereferenced
                     MaybeUninit::uninit().as_ptr(),
                     main_buffer,
                     closure_buffer,
                 );
-            }
-        });
-        if let Err(x) = res {
-            if let Some(string) = x.downcast_ref::<String>() {
-                println!("\nPlugin crashed with message:\n\t{}\n", string);
             } else {
-                println!("\nPlugin crashed with unknown type: {:?}\n", x.type_id());
+                MSG.with(|msg| {
+                    println!("\nPlugin crashed with message:\n\t{}\n", msg.borrow());
+                });
+                println!("Cleaning up allocations and continuing...")
             }
-            println!("Cleaning up allocations and continuing...")
         }
+        if let Err(err) = lib.close() {
+            println!("Failed to cleanup the plugin shared library: {:?}", err);
+        }
+
         println!("\n");
     }
     _ = rl.save_history("/tmp/history.txt");
@@ -203,12 +198,16 @@ pub extern "C" fn rust_main() {
 
 #[no_mangle]
 pub unsafe extern "C" fn roc_alloc(size: usize, alignment: u32) -> *mut c_void {
-    BUMP.with(|bump| {
+    match BUMP.with(|bump| {
         bump.borrow()
             .try_alloc_layout(Layout::from_size_align(size, alignment as usize).unwrap())
-            .unwrap_or_else(|_| panic!("Plugin exceeded memory limit"))
-    })
-    .as_ptr() as _
+    }) {
+        Ok(alloc) => alloc.as_ptr() as _,
+        Err(_) => {
+            MSG.with(|msg| *msg.borrow_mut() = "Plugin exceeded memory limit".to_string());
+            longjmp(JMPBUF.as_mut_ptr(), 1);
+        }
+    }
 }
 
 #[no_mangle]
@@ -218,25 +217,30 @@ pub unsafe extern "C" fn roc_realloc(
     old_size: usize,
     alignment: u32,
 ) -> *mut c_void {
-    let new_loc = BUMP
-        .with(|bump| {
-            bump.borrow()
-                .try_alloc_layout(Layout::from_size_align(new_size, alignment as usize).unwrap())
-                .unwrap_or_else(|_| panic!("Plugin exceeded memory limit"))
-        })
-        .as_ptr() as _;
+    match BUMP.with(|bump| {
+        bump.borrow()
+            .try_alloc_layout(Layout::from_size_align(new_size, alignment as usize).unwrap())
+    }) {
+        Ok(alloc) => {
+            let new_loc = alloc.as_ptr() as _;
+            roc_memcpy(new_loc, c_ptr, old_size);
 
-    roc_memcpy(new_loc, c_ptr, old_size);
-
-    new_loc
+            new_loc
+        }
+        Err(_) => {
+            MSG.with(|msg| *msg.borrow_mut() = "Plugin exceeded memory limit".to_string());
+            longjmp(JMPBUF.as_mut_ptr(), 1);
+        }
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn roc_dealloc(_c_ptr: *mut c_void, _alignment: u32) {}
 
 #[no_mangle]
-pub unsafe extern "C" fn roc_panic(msg: &RocStr, _tag_id: u32) {
-    panic!("{}", msg.as_str());
+pub unsafe extern "C" fn roc_panic(panic_msg: &RocStr, _tag_id: u32) {
+    MSG.with(|msg| *msg.borrow_mut() = panic_msg.as_str().to_string());
+    longjmp(JMPBUF.as_mut_ptr(), 1);
 }
 
 #[cfg(unix)]
