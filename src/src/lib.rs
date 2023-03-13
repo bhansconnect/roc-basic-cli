@@ -193,22 +193,34 @@ pub extern "C" fn rust_main() {
         // Run app with calls to plugin.
         unsafe {
             JMPBUF = MaybeUninit::uninit();
-            if setjmp(JMPBUF.as_mut_ptr()) == 0 {
-                let main_buffer = roc_alloc(roc_main_size() as usize, 8) as _;
-                let closure_buffer = roc_alloc(size_fx_result() as usize, 8) as _;
+            match setjmp(JMPBUF.as_mut_ptr()) {
+                0 => {
+                    let main_buffer = roc_alloc(roc_main_size() as usize, 8) as _;
+                    let closure_buffer = roc_alloc(size_fx_result() as usize, 8) as _;
 
-                roc_main(main_buffer);
-                call_fx(
-                    // This flags pointer will never get dereferenced
-                    MaybeUninit::uninit().as_ptr(),
-                    main_buffer,
-                    closure_buffer,
-                );
-            } else {
-                MSG.with(|msg| {
-                    println!("\nPlugin crashed with message:\n\t{}\n", msg.borrow());
-                });
-                println!("Cleaning up allocations and continuing...")
+                    roc_main(main_buffer);
+                    call_fx(
+                        // This flags pointer will never get dereferenced
+                        MaybeUninit::uninit().as_ptr(),
+                        main_buffer,
+                        closure_buffer,
+                    );
+                }
+                1 => {
+                    MSG.with(|msg| {
+                        println!("\nPlugin crashed with message:\n\t{}\n", msg.borrow());
+                    });
+                    println!("Cleaning up allocations and continuing...")
+                }
+                2 => {
+                    MSG.with(|msg| {
+                        println!("\n{}\n", msg.borrow());
+                    });
+                    println!("Cleaning up allocations and continuing...")
+                }
+                _ => {
+                    panic!("App recieved invalid setjmp value")
+                }
             }
         }
         if let Err(err) = lib.close() {
@@ -233,7 +245,7 @@ pub unsafe extern "C" fn roc_alloc(size: usize, alignment: u32) -> *mut c_void {
         Ok(alloc) => alloc.as_ptr() as _,
         Err(_) => {
             MSG.with(|msg| *msg.borrow_mut() = "Plugin exceeded memory limit".to_string());
-            longjmp(JMPBUF.as_mut_ptr(), 1);
+            longjmp(JMPBUF.as_mut_ptr(), 2);
         }
     }
 }
@@ -257,7 +269,7 @@ pub unsafe extern "C" fn roc_realloc(
         }
         Err(_) => {
             MSG.with(|msg| *msg.borrow_mut() = "Plugin exceeded memory limit".to_string());
-            longjmp(JMPBUF.as_mut_ptr(), 1);
+            longjmp(JMPBUF.as_mut_ptr(), 2);
         }
     }
 }
@@ -345,8 +357,8 @@ pub extern "C" fn roc_fx_setCwd(roc_path: &RocList<u8>) -> RocResult<(), ()> {
 
 #[no_mangle]
 pub unsafe extern "C" fn roc_fx_processExit(exit_code: u8) {
-    MSG.with(|msg| *msg.borrow_mut() = format!("Process exited with code: {}", exit_code));
-    longjmp(JMPBUF.as_mut_ptr(), 1);
+    MSG.with(|msg| *msg.borrow_mut() = format!("Plugin exited with code: {}", exit_code));
+    longjmp(JMPBUF.as_mut_ptr(), 2);
 }
 
 #[no_mangle]
