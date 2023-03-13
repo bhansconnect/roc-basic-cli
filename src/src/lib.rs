@@ -48,7 +48,7 @@ pub extern "C" fn rust_main() {
 
     loop {
         let mut input = String::new();
-        print!("Enter app to run with args >> ");
+        print!("Enter app to run with args: ");
         let _ = std::io::stdout().flush();
         std::io::stdin().read_line(&mut input).unwrap();
         println!("\n");
@@ -65,7 +65,7 @@ pub extern "C" fn rust_main() {
         });
 
         // Run app with calls to plugin.
-        dbg!(std::panic::catch_unwind(|| {
+        let res = std::panic::catch_unwind(|| {
             let size = unsafe { roc_main_size() } as usize;
             let layout = Layout::array::<u8>(size).unwrap();
 
@@ -78,7 +78,15 @@ pub extern "C" fn rust_main() {
 
                 call_the_closure(buffer);
             }
-        }));
+        });
+        if let Err(x) = res {
+            if let Some(string) = x.downcast_ref::<String>() {
+                println!("Plugin crashed with message:\t{}\n", string);
+            } else {
+                println!("Plugin crashed with unknown type:\t{:?}\n", x.type_id());
+            }
+            println!("Cleaning up allocations and continuing.")
+        }
         println!("\n");
     }
 }
@@ -116,7 +124,7 @@ pub unsafe extern "C" fn roc_dealloc(_c_ptr: *mut c_void, _alignment: u32) {}
 
 #[no_mangle]
 pub unsafe extern "C" fn roc_panic(msg: &RocStr, _tag_id: u32) {
-    panic!("Plugin crashed with:\t{}\n", msg.as_str());
+    panic!("{}", msg.as_str());
 }
 
 #[cfg(unix)]
@@ -215,7 +223,7 @@ pub extern "C" fn roc_fx_setCwd(roc_path: &RocList<u8>) -> RocResult<(), ()> {
 
 #[no_mangle]
 pub extern "C" fn roc_fx_processExit(exit_code: u8) {
-    panic!("Process exited wiht code: {}", exit_code);
+    panic!("Process exited with code: {}", exit_code);
 }
 
 #[no_mangle]
