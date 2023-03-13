@@ -65,6 +65,10 @@ pub extern "C" fn rust_main() {
     let mut rl = Editor::with_config(config).unwrap();
     rl.set_helper(Some(helper));
     _ = rl.load_history("/tmp/history.txt");
+
+    println!("Welcome to the pluggable basic-cli app runner!");
+    println!("Enter the path to a roc app and what args to pass it.");
+    println!("Ex: examples/args.roc div -n 12 -d 22\n");
     loop {
         // Request input.
 
