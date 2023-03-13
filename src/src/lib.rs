@@ -14,6 +14,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use bumpalo::Bump;
@@ -22,6 +23,8 @@ use file_glue::ReadErr;
 use file_glue::WriteErr;
 
 thread_local!(static BUMP: RefCell<Bump> = RefCell::new(Bump::new()));
+
+thread_local!(static ARGS: RefCell<Vec<String>> = RefCell::new(vec![]));
 
 extern "C" {
     #[link_name = "roc__mainForHost_1_exposed_generic"]
@@ -47,13 +50,50 @@ pub extern "C" fn rust_main() {
     std::panic::set_hook(Box::new(|_| {}));
 
     loop {
+        // Request input.
         let mut input = String::new();
-        print!("Enter app to run with args: ");
+        print!("Enter app to run with args\n > ");
         let _ = std::io::stdout().flush();
         std::io::stdin().read_line(&mut input).unwrap();
-        println!("\n");
+        println!("");
 
-        // Compile app to plugin.
+        // Process args.
+        let input_path = ARGS.with(|args| {
+            *args.borrow_mut() = input.trim().split(" ").map(|x| x.to_string()).collect();
+            args.borrow()[0].to_owned()
+        });
+        let input_path = Path::new(&input_path);
+        if !input_path.is_file() {
+            println!("Could not find input file\n\n");
+            continue;
+        }
+        if input_path.extension() != Some(OsStr::new("roc")) {
+            println!("Expected input file to have the `.roc` extension\n\n");
+            continue;
+        }
+
+        // Run roc to compile lib.
+        let out = Command::new("roc")
+            .args(["build", "--lib", "--prebuilt-platform=true"])
+            .arg(input_path)
+            .output();
+
+        if let Err(err) = out {
+            println!("Failed to run roc to compile plugin: {:?}\n\n", err);
+            continue;
+        }
+        let out = out.unwrap();
+        let stdout = std::str::from_utf8(&out.stdout).expect("roc outputted invalid utf8");
+        if !out.status.success() || !stdout.contains("successfully building") {
+            println!("Roc command failed during compilation:");
+            println!("stdout was:");
+            std::io::stdout().write_all(&out.stdout).unwrap();
+            println!("\nstderr was:");
+            std::io::stdout().write_all(&out.stderr).unwrap();
+            println!("\n\n");
+            continue;
+        }
+        dbg!(stdout);
 
         // Load plugin.
 
@@ -178,13 +218,11 @@ unsafe fn call_the_closure(closure_data_ptr: *const u8) -> u8 {
         buffer.as_ptr(),
     );
 
-    // TODO return the u8 exit code returned by the Fx closure
     0
 }
 
 #[no_mangle]
 pub extern "C" fn roc_fx_envDict() -> RocDict<RocStr, RocStr> {
-    // TODO: can we be more efficient about reusing the String's memory for RocStr?
     std::env::vars_os()
         .map(|(key, val)| {
             (
@@ -197,16 +235,11 @@ pub extern "C" fn roc_fx_envDict() -> RocDict<RocStr, RocStr> {
 
 #[no_mangle]
 pub extern "C" fn roc_fx_args() -> RocList<RocStr> {
-    // TODO: can we be more efficient about reusing the String's memory for RocStr?
-    // TODO: we will need to cheat here and get the args some other way. Probably from the input string.
-    std::env::args_os()
-        .map(|os_str| RocStr::from(os_str.to_string_lossy().borrow()))
-        .collect()
+    ARGS.with(|args| args.borrow().iter().map(|x| x.as_str().into()).collect())
 }
 
 #[no_mangle]
 pub extern "C" fn roc_fx_envVar(roc_str: &RocStr) -> RocResult<RocStr, ()> {
-    // TODO: can we be more efficient about reusing the String's memory for RocStr?
     match std::env::var_os(roc_str.as_str()) {
         Some(os_str) => RocResult::ok(RocStr::from(os_str.to_string_lossy().borrow())),
         None => RocResult::err(()),
