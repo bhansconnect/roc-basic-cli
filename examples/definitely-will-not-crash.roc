@@ -1,4 +1,4 @@
-app "definiteyl-will-not-crash"
+app "definitely-will-not-crash"
     packages { pf: "../src/main.roc" }
     imports [pf.Stdin, pf.Stdout, pf.Task.{ await, Task }]
     provides [main] to pf
