@@ -655,14 +655,20 @@ pub static ROC_MEMSET: unsafe extern "C" fn(*mut c_void, i32, usize) -> *mut c_v
 
 #[used]
 #[cfg(unix)]
-pub static ROC_GETPPID: unsafe extern "C" fn() -> i32 = roc_getppid;
+pub static ROC_GETPPID: unsafe extern "C" fn() -> pid_t = roc_getppid;
 #[used]
 #[cfg(unix)]
-pub static ROC_MMAP: unsafe extern "C" fn(*mut c_void, usize, i32, i32, i32, i64) -> *mut c_void =
-    roc_mmap;
+pub static ROC_MMAP: unsafe extern "C" fn(
+    *mut c_void,
+    size_t,
+    c_int,
+    c_int,
+    c_int,
+    off_t,
+) -> *mut c_void = roc_mmap;
 #[used]
 #[cfg(unix)]
-pub static ROC_SHM_OPEN: unsafe extern "C" fn(*const i8, i32, u32) -> i32 = roc_shm_open;
+pub static ROC_SHM_OPEN: unsafe extern "C" fn(*const c_char, c_int, mode_t) -> c_int = roc_shm_open;
 
 #[used]
 pub static ROC_FX_ENVDICT: extern "C" fn() -> RocDict<RocStr, RocStr> = roc_fx_envDict;
