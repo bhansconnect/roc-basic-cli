@@ -89,6 +89,9 @@ pub extern "C" fn rust_main() {
                 break;
             }
         };
+        if matches!(input.as_str(), "exit" | "quit") {
+            break;
+        }
         println!("");
 
         // Process args.
@@ -363,6 +366,7 @@ pub extern "C" fn roc_fx_stdoutWrite(text: &RocStr) {
 pub extern "C" fn roc_fx_stderrLine(line: &RocStr) {
     let string = line.as_str();
     eprintln!("{}", string);
+    std::io::stderr().flush().unwrap();
 }
 
 #[no_mangle]
