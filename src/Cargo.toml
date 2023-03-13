@@ -21,5 +21,6 @@ roc_std = { git = "https://github.com/roc-lang/roc", rev = "46d69e8" }
 libc = "0.2"
 backtrace = "0.3"
 reqwest = { version="0.11.11", default-features=false, features=["blocking", "rustls-tls"] }
+bumpalo = "3.12.0"
 
 [workspace]

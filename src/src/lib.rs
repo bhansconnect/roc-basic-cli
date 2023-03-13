@@ -9,14 +9,19 @@ use core::mem::MaybeUninit;
 use glue::Metadata;
 use roc_std::{RocDict, RocList, RocResult, RocStr};
 use std::borrow::{Borrow, Cow};
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
+use bumpalo::Bump;
+
 use file_glue::ReadErr;
 use file_glue::WriteErr;
+
+thread_local!(static BUMP: RefCell<Bump> = RefCell::new(Bump::new()));
 
 extern "C" {
     #[link_name = "roc__mainForHost_1_exposed_generic"]
@@ -53,6 +58,11 @@ pub extern "C" fn rust_main() {
         // Load plugin.
 
         // Setup new bumpalo bump for memory allocations.
+        BUMP.with(|bump| {
+            bump.borrow_mut().reset();
+            // Set arbitrary limit for processes of 1MB.
+            bump.borrow_mut().set_allocation_limit(Some(1024 * 1024));
+        });
 
         // Run app with calls to plugin.
         dbg!(std::panic::catch_unwind(|| {
@@ -60,14 +70,13 @@ pub extern "C" fn rust_main() {
             let layout = Layout::array::<u8>(size).unwrap();
 
             unsafe {
-                // TODO allocate on the stack if it's under a certain size
-                let buffer = std::alloc::alloc(layout);
+                let buffer = BUMP
+                    .with(|bump| bump.borrow().alloc_layout(layout))
+                    .as_ptr();
 
                 roc_main(buffer);
 
                 call_the_closure(buffer);
-
-                std::alloc::dealloc(buffer, layout);
             }
         }));
         println!("\n");
@@ -75,27 +84,38 @@ pub extern "C" fn rust_main() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn roc_alloc(size: usize, _alignment: u32) -> *mut c_void {
-    libc::malloc(size)
+pub unsafe extern "C" fn roc_alloc(size: usize, alignment: u32) -> *mut c_void {
+    BUMP.with(|bump| {
+        bump.borrow()
+            .alloc_layout(Layout::from_size_align(size, alignment as usize).unwrap())
+    })
+    .as_ptr() as _
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn roc_realloc(
     c_ptr: *mut c_void,
     new_size: usize,
-    _old_size: usize,
-    _alignment: u32,
+    old_size: usize,
+    alignment: u32,
 ) -> *mut c_void {
-    libc::realloc(c_ptr, new_size)
+    let new_loc = BUMP
+        .with(|bump| {
+            bump.borrow()
+                .alloc_layout(Layout::from_size_align(new_size, alignment as usize).unwrap())
+        })
+        .as_ptr() as _;
+
+    roc_memcpy(new_loc, c_ptr, old_size);
+
+    new_loc
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn roc_dealloc(c_ptr: *mut c_void, _alignment: u32) {
-    libc::free(c_ptr)
-}
+pub unsafe extern "C" fn roc_dealloc(_c_ptr: *mut c_void, _alignment: u32) {}
 
 #[no_mangle]
-pub unsafe extern "C" fn roc_panic(msg: &RocStr, tag_id: u32) {
+pub unsafe extern "C" fn roc_panic(msg: &RocStr, _tag_id: u32) {
     panic!("Plugin crashed with:\t{}\n", msg.as_str());
 }
 
@@ -141,16 +161,14 @@ pub unsafe extern "C" fn roc_memset(dst: *mut c_void, c: i32, n: usize) -> *mut 
 unsafe fn call_the_closure(closure_data_ptr: *const u8) -> u8 {
     let size = size_Fx_result() as usize;
     let layout = Layout::array::<u8>(size).unwrap();
-    let buffer = std::alloc::alloc(layout) as *mut u8;
+    let buffer = BUMP.with(|bump| bump.borrow().alloc_layout(layout));
 
     call_Fx(
         // This flags pointer will never get dereferenced
         MaybeUninit::uninit().as_ptr(),
-        closure_data_ptr as *const u8,
-        buffer as *mut u8,
+        closure_data_ptr,
+        buffer.as_ptr(),
     );
-
-    std::alloc::dealloc(buffer, layout);
 
     // TODO return the u8 exit code returned by the Fx closure
     0
@@ -172,6 +190,7 @@ pub extern "C" fn roc_fx_envDict() -> RocDict<RocStr, RocStr> {
 #[no_mangle]
 pub extern "C" fn roc_fx_args() -> RocList<RocStr> {
     // TODO: can we be more efficient about reusing the String's memory for RocStr?
+    // TODO: we will need to cheat here and get the args some other way. Probably from the input string.
     std::env::args_os()
         .map(|os_str| RocStr::from(os_str.to_string_lossy().borrow()))
         .collect()
