@@ -32,7 +32,7 @@ stdoutLine : Str -> Effect {}
 stdoutWrite : Str -> Effect {}
 stderrLine : Str -> Effect {}
 stderrWrite : Str -> Effect {}
-stdinLine : Effect Str
+stdinLine : Effect (Result Str {})
 
 fileWriteBytes : List U8, List U8 -> Effect (Result {} InternalFile.WriteErr)
 fileWriteUtf8 : List U8, Str -> Effect (Result {} InternalFile.WriteErr)

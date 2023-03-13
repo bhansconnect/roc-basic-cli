@@ -9,7 +9,7 @@ use core::mem::MaybeUninit;
 use glue::Metadata;
 use roc_std::{RocDict, RocList, RocResult, RocStr};
 use std::borrow::{Borrow, Cow};
-use std::ffi::{OsStr};
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -37,6 +37,28 @@ extern "C" {
 }
 
 #[no_mangle]
+pub extern "C" fn rust_main() {
+    // Disable panic printout.
+    std::panic::set_hook(Box::new(|_| {}));
+
+    dbg!(std::panic::catch_unwind(|| {
+        let size = unsafe { roc_main_size() } as usize;
+        let layout = Layout::array::<u8>(size).unwrap();
+
+        unsafe {
+            // TODO allocate on the stack if it's under a certain size
+            let buffer = std::alloc::alloc(layout);
+
+            roc_main(buffer);
+
+            call_the_closure(buffer);
+
+            std::alloc::dealloc(buffer, layout);
+        }
+    }));
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn roc_alloc(size: usize, _alignment: u32) -> *mut c_void {
     libc::malloc(size)
 }
@@ -58,21 +80,7 @@ pub unsafe extern "C" fn roc_dealloc(c_ptr: *mut c_void, _alignment: u32) {
 
 #[no_mangle]
 pub unsafe extern "C" fn roc_panic(msg: &RocStr, tag_id: u32) {
-    match tag_id {
-        0 => {
-            eprintln!("Roc crashed with:\n\n\t{}\n", msg.as_str());
-
-            print_backtrace();
-            std::process::exit(1);
-        }
-        1 => {
-            eprintln!("The program crashed with:\n\n\t{}\n", msg.as_str());
-
-            print_backtrace();
-            std::process::exit(1);
-        }
-        _ => todo!(),
-    }
+    panic!("Plugin crashed with:\t{}\n", msg.as_str());
 }
 
 #[cfg(unix)]
@@ -104,101 +112,6 @@ pub unsafe extern "C" fn roc_shm_open(
     libc::shm_open(name, oflag, mode as libc::c_uint)
 }
 
-fn print_backtrace() {
-    eprintln!("Here is the call stack that led to the crash:\n");
-
-    let mut entries = Vec::new();
-
-    #[derive(Default)]
-    struct Entry {
-        pub fn_name: String,
-        pub filename: Option<String>,
-        pub line: Option<u32>,
-        pub col: Option<u32>,
-    }
-
-    backtrace::trace(|frame| {
-        backtrace::resolve_frame(frame, |symbol| {
-            if let Some(fn_name) = symbol.name() {
-                let fn_name = fn_name.to_string();
-
-                if should_show_in_backtrace(&fn_name) {
-                    let mut entry: Entry = Default::default();
-
-                    entry.fn_name = format_fn_name(&fn_name);
-
-                    if let Some(path) = symbol.filename() {
-                        entry.filename = Some(path.to_string_lossy().into_owned());
-                    };
-
-                    entry.line = symbol.lineno();
-                    entry.col = symbol.colno();
-
-                    entries.push(entry);
-                }
-            } else {
-                entries.push(Entry {
-                    fn_name: "???".to_string(),
-                    ..Default::default()
-                });
-            }
-        });
-
-        true // keep going to the next frame
-    });
-
-    for entry in entries {
-        eprintln!("\t{}", entry.fn_name);
-
-        if let Some(filename) = entry.filename {
-            eprintln!("\t\t{filename}");
-        }
-    }
-
-    eprintln!("\nOptimizations can make this list inaccurate! If it looks wrong, try running without `--optimize` and with `--linker=legacy`\n");
-}
-
-fn should_show_in_backtrace(fn_name: &str) -> bool {
-    let is_from_rust = fn_name.contains("::");
-    let is_host_fn = fn_name.starts_with("roc_panic")
-        || fn_name.starts_with("_Effect_effect")
-        || fn_name.starts_with("_roc__")
-        || fn_name.starts_with("rust_main")
-        || fn_name == "_main";
-
-    !is_from_rust && !is_host_fn
-}
-
-fn format_fn_name(fn_name: &str) -> String {
-    // e.g. convert "_Num_sub_a0c29024d3ec6e3a16e414af99885fbb44fa6182331a70ab4ca0886f93bad5"
-    // to ["Num", "sub", "a0c29024d3ec6e3a16e414af99885fbb44fa6182331a70ab4ca0886f93bad5"]
-    let mut pieces_iter = fn_name.split("_");
-
-    if let (_, Some(module_name), Some(name)) =
-        (pieces_iter.next(), pieces_iter.next(), pieces_iter.next())
-    {
-        display_roc_fn(module_name, name)
-    } else {
-        "???".to_string()
-    }
-}
-
-fn display_roc_fn(module_name: &str, fn_name: &str) -> String {
-    let module_name = if module_name == "#UserApp" {
-        "app"
-    } else {
-        module_name
-    };
-
-    let fn_name = if fn_name.parse::<u64>().is_ok() {
-        "(anonymous function)"
-    } else {
-        fn_name
-    };
-
-    format!("\u{001B}[36m{module_name}\u{001B}[39m.{fn_name}")
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn roc_memcpy(dst: *mut c_void, src: *mut c_void, n: usize) -> *mut c_void {
     libc::memcpy(dst, src, n)
@@ -207,23 +120,6 @@ pub unsafe extern "C" fn roc_memcpy(dst: *mut c_void, src: *mut c_void, n: usize
 #[no_mangle]
 pub unsafe extern "C" fn roc_memset(dst: *mut c_void, c: i32, n: usize) -> *mut c_void {
     libc::memset(dst, c, n)
-}
-
-#[no_mangle]
-pub extern "C" fn rust_main() {
-    let size = unsafe { roc_main_size() } as usize;
-    let layout = Layout::array::<u8>(size).unwrap();
-
-    unsafe {
-        // TODO allocate on the stack if it's under a certain size
-        let buffer = std::alloc::alloc(layout);
-
-        roc_main(buffer);
-
-        call_the_closure(buffer);
-
-        std::alloc::dealloc(buffer, layout);
-    }
 }
 
 unsafe fn call_the_closure(closure_data_ptr: *const u8) -> u8 {
@@ -296,13 +192,15 @@ pub extern "C" fn roc_fx_exePath(_roc_str: &RocStr) -> RocResult<RocList<u8>, ()
 }
 
 #[no_mangle]
-pub extern "C" fn roc_fx_stdinLine() -> RocStr {
+pub extern "C" fn roc_fx_stdinLine() -> RocResult<RocStr, ()> {
     use std::io::BufRead;
 
     let stdin = std::io::stdin();
-    let line1 = stdin.lock().lines().next().unwrap().unwrap();
-
-    RocStr::from(line1.as_str())
+    if let Some(Ok(line)) = stdin.lock().lines().next() {
+        RocResult::ok(RocStr::from(line.as_str()))
+    } else {
+        RocResult::err(())
+    }
 }
 
 #[no_mangle]
@@ -402,13 +300,9 @@ pub extern "C" fn roc_fx_fileReadBytes(roc_path: &RocList<u8>) -> RocResult<RocL
     match File::open(path_from_roc_path(roc_path)) {
         Ok(mut file) => match file.read_to_end(&mut bytes) {
             Ok(_bytes_read) => RocResult::ok(RocList::from(bytes.as_slice())),
-            Err(err) => {
-                RocResult::err(toRocReadError(err))
-            }
+            Err(err) => RocResult::err(toRocReadError(err)),
         },
-        Err(err) => {
-            RocResult::err(toRocReadError(err))
-        }
+        Err(err) => RocResult::err(toRocReadError(err)),
     }
 }
 
@@ -416,9 +310,7 @@ pub extern "C" fn roc_fx_fileReadBytes(roc_path: &RocList<u8>) -> RocResult<RocL
 pub extern "C" fn roc_fx_fileDelete(roc_path: &RocList<u8>) -> RocResult<(), ReadErr> {
     match std::fs::remove_file(path_from_roc_path(roc_path)) {
         Ok(()) => RocResult::ok(()),
-        Err(err) => {
-            RocResult::err(toRocReadError(err))
-        }
+        Err(err) => RocResult::err(toRocReadError(err)),
     }
 }
 
@@ -452,9 +344,7 @@ pub extern "C" fn roc_fx_dirList(
                 })
                 .collect::<RocList<RocList<u8>>>(),
         ),
-        Err(err) => {
-            RocResult::err(toRocWriteError(err))
-        }
+        Err(err) => RocResult::err(toRocWriteError(err)),
     }
 }
 
@@ -564,8 +454,8 @@ pub extern "C" fn roc_fx_sendRequest(roc_request: &glue::Request) -> glue::Respo
     }
 }
 
-fn toRocWriteError(err : std::io::Error) -> file_glue::WriteErr {
-    match err.kind(){
+fn toRocWriteError(err: std::io::Error) -> file_glue::WriteErr {
+    match err.kind() {
         std::io::ErrorKind::NotFound => file_glue::WriteErr::NotFound,
         std::io::ErrorKind::AlreadyExists => file_glue::WriteErr::AlreadyExists,
         std::io::ErrorKind::Interrupted => file_glue::WriteErr::Interrupted,
@@ -576,20 +466,20 @@ fn toRocWriteError(err : std::io::Error) -> file_glue::WriteErr {
         std::io::ErrorKind::WriteZero => file_glue::WriteErr::WriteZero,
         _ => file_glue::WriteErr::Unsupported,
         // TODO investigate support the following IO errors
-        // std::io::ErrorKind::FileTooLarge <- unstable language feature 
-        // std::io::ErrorKind::ExecutableFileBusy <- unstable language feature 
-        // std::io::ErrorKind::FilesystemQuotaExceeded <- unstable language feature 
-        // std::io::ErrorKind::InvalidFilename <- unstable language feature 
-        // std::io::ErrorKind::ResourceBusy <- unstable language feature 
-        // std::io::ErrorKind::ReadOnlyFilesystem <- unstable language feature 
-        // std::io::ErrorKind::TooManyLinks <- unstable language feature 
-        // std::io::ErrorKind::StaleNetworkFileHandle <- unstable language feature 
+        // std::io::ErrorKind::FileTooLarge <- unstable language feature
+        // std::io::ErrorKind::ExecutableFileBusy <- unstable language feature
+        // std::io::ErrorKind::FilesystemQuotaExceeded <- unstable language feature
+        // std::io::ErrorKind::InvalidFilename <- unstable language feature
+        // std::io::ErrorKind::ResourceBusy <- unstable language feature
+        // std::io::ErrorKind::ReadOnlyFilesystem <- unstable language feature
+        // std::io::ErrorKind::TooManyLinks <- unstable language feature
+        // std::io::ErrorKind::StaleNetworkFileHandle <- unstable language feature
         // std::io::ErrorKind::StorageFull <- unstable language feature
     }
 }
 
-fn toRocReadError(err : std::io::Error) -> file_glue::ReadErr {
-    match err.kind(){
+fn toRocReadError(err: std::io::Error) -> file_glue::ReadErr {
+    match err.kind() {
         std::io::ErrorKind::Interrupted => file_glue::ReadErr::Interrupted,
         std::io::ErrorKind::NotFound => file_glue::ReadErr::NotFound,
         std::io::ErrorKind::OutOfMemory => file_glue::ReadErr::OutOfMemory,

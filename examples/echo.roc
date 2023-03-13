@@ -6,12 +6,16 @@ app "echo"
 main : Task {} []
 main =
     _ <- Task.await (Stdout.line "🗣  Shout into this cave and hear the echo! 👂👂👂")
-    Task.loop {} \_ -> Task.map tick Step
+    Task.loop {} \_ -> tick
 
-tick : Task.Task {} []
 tick =
-    shout <- Task.await Stdin.line
-    Stdout.line (echo shout)
+    result <- Task.attempt Stdin.line
+    when result is
+        Ok shout ->
+            _ <- echo shout |> Stdout.line |> Task.await
+            Task.succeed (Step {})
+        Err OutOfData ->
+            Task.succeed (Done {})
 
 echo : Str -> Str
 echo = \shout ->

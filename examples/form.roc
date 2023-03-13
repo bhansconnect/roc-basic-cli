@@ -5,6 +5,10 @@ app "form"
 
 main : Task {} []
 main =
+    _ <- form |> Task.attempt
+    Task.succeed {}
+
+form =
     _ <- await (Stdout.line "What's your first name?")
     firstName <- await Stdin.line
     _ <- await (Stdout.line "What's your last name?")
