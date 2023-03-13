@@ -205,7 +205,8 @@ pub extern "C" fn rust_main() {
 pub unsafe extern "C" fn roc_alloc(size: usize, alignment: u32) -> *mut c_void {
     BUMP.with(|bump| {
         bump.borrow()
-            .alloc_layout(Layout::from_size_align(size, alignment as usize).unwrap())
+            .try_alloc_layout(Layout::from_size_align(size, alignment as usize).unwrap())
+            .unwrap_or_else(|_| panic!("Plugin exceeded memory limit"))
     })
     .as_ptr() as _
 }
@@ -220,7 +221,8 @@ pub unsafe extern "C" fn roc_realloc(
     let new_loc = BUMP
         .with(|bump| {
             bump.borrow()
-                .alloc_layout(Layout::from_size_align(new_size, alignment as usize).unwrap())
+                .try_alloc_layout(Layout::from_size_align(new_size, alignment as usize).unwrap())
+                .unwrap_or_else(|_| panic!("Plugin exceeded memory limit"))
         })
         .as_ptr() as _;
 
