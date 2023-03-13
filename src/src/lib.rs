@@ -41,21 +41,37 @@ pub extern "C" fn rust_main() {
     // Disable panic printout.
     std::panic::set_hook(Box::new(|_| {}));
 
-    dbg!(std::panic::catch_unwind(|| {
-        let size = unsafe { roc_main_size() } as usize;
-        let layout = Layout::array::<u8>(size).unwrap();
+    loop {
+        let mut input = String::new();
+        print!("Enter app to run with args >> ");
+        let _ = std::io::stdout().flush();
+        std::io::stdin().read_line(&mut input).unwrap();
+        println!("\n");
 
-        unsafe {
-            // TODO allocate on the stack if it's under a certain size
-            let buffer = std::alloc::alloc(layout);
+        // Compile app to plugin.
 
-            roc_main(buffer);
+        // Load plugin.
 
-            call_the_closure(buffer);
+        // Setup new bumpalo bump for memory allocations.
 
-            std::alloc::dealloc(buffer, layout);
-        }
-    }));
+        // Run app with calls to plugin.
+        dbg!(std::panic::catch_unwind(|| {
+            let size = unsafe { roc_main_size() } as usize;
+            let layout = Layout::array::<u8>(size).unwrap();
+
+            unsafe {
+                // TODO allocate on the stack if it's under a certain size
+                let buffer = std::alloc::alloc(layout);
+
+                roc_main(buffer);
+
+                call_the_closure(buffer);
+
+                std::alloc::dealloc(buffer, layout);
+            }
+        }));
+        println!("\n");
+    }
 }
 
 #[no_mangle]
@@ -180,7 +196,7 @@ pub extern "C" fn roc_fx_setCwd(roc_path: &RocList<u8>) -> RocResult<(), ()> {
 
 #[no_mangle]
 pub extern "C" fn roc_fx_processExit(exit_code: u8) {
-    std::process::exit(exit_code as i32);
+    panic!("Process exited wiht code: {}", exit_code);
 }
 
 #[no_mangle]
@@ -207,6 +223,7 @@ pub extern "C" fn roc_fx_stdinLine() -> RocResult<RocStr, ()> {
 pub extern "C" fn roc_fx_stdoutLine(line: &RocStr) {
     let string = line.as_str();
     println!("{}", string);
+    std::io::stdout().flush().unwrap();
 }
 
 #[no_mangle]
