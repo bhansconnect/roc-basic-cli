@@ -87,12 +87,16 @@ pub extern "C" fn rust_main() {
     rl.set_helper(Some(helper));
     _ = rl.load_history("/tmp/history.txt");
 
+    // Set arbitrary starting limit for processes of 1MB.
+    BUMP.with(|bump| {
+        bump.borrow_mut().set_allocation_limit(Some(1024 * 1024));
+    });
+
     println!("Welcome to the pluggable basic-cli app runner!");
     println!("Enter the path to a roc app and what args to pass it.");
     println!("Ex: examples/args.roc div -n 12 -d 22\n");
     loop {
         // Request input.
-
         let readline = rl.readline(">> ");
         let input = match readline {
             Ok(line) => {
@@ -110,8 +114,33 @@ pub extern "C" fn rust_main() {
                 break;
             }
         };
+
+        // Handle special commands.
         if matches!(input.as_str(), "exit" | "quit") {
             break;
+        }
+        if let Some(rem) = input.trim().strip_prefix("set limit mb ") {
+            match rem.trim().parse::<usize>() {
+                Ok(lim) => {
+                    BUMP.with(|bump| {
+                        // Completely create a new bump on mem limit change to ensure it is enforced.
+                        *bump.borrow_mut() = Bump::new();
+
+                        bump.borrow_mut().set_allocation_limit(if lim > 0 {
+                            Some(lim * 1024 * 1024)
+                        } else {
+                            None
+                        });
+                    });
+
+                    println!("\nSetting mem limit to {} MB\n", lim);
+                }
+                Err(err) => println!(
+                    "\nFailed to parse `set limit mb <amount>` command (0 means unlimited): {:?}\n",
+                    err
+                ),
+            }
+            continue;
         }
         println!("");
 
@@ -183,11 +212,9 @@ pub extern "C" fn rust_main() {
                 .expect("failed to load plugin functions")
         };
 
-        // Re-setup arena and jump buffer.
+        // Reset the arena.
         BUMP.with(|bump| {
             bump.borrow_mut().reset();
-            // Set arbitrary limit for processes of 1MB.
-            bump.borrow_mut().set_allocation_limit(Some(1024 * 1024));
         });
 
         // Run app with calls to plugin.
