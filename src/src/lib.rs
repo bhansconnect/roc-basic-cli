@@ -89,7 +89,7 @@ pub extern "C" fn rust_main() {
 
     println!("Welcome to the pluggable basic-cli app runner!");
     println!("Enter the path to a roc app and what args to pass it.");
-    println!("Ex: examples/args.roc div -n 12 -d 22\n");
+    println!("Ex: `examples/countdown.roc` or `examples/args.roc div -n 12 -d 22`\n");
     // Set arbitrary starting limit for processes of 1MB.
     let mut mem_limit_mb = 1;
     // Set default timeout of 30 seconds.
