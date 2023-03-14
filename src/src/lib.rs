@@ -92,6 +92,8 @@ pub extern "C" fn rust_main() {
     println!("Ex: examples/args.roc div -n 12 -d 22\n");
     // Set arbitrary starting limit for processes of 1MB.
     let mut mem_limit_mb = 1;
+    // Set default timeout of 600 seconds.
+    let mut timeout = 600;
     loop {
         // Request input.
         let readline = rl.readline(">> ");
@@ -124,6 +126,19 @@ pub extern "C" fn rust_main() {
                 }
                 Err(err) => println!(
                     "\nFailed to parse `set limit mb <amount>` command (0 means unlimited): {:?}\n",
+                    err
+                ),
+            }
+            continue;
+        }
+        if let Some(time) = input.trim().strip_prefix("set timeout ") {
+            match time.trim().parse::<u64>() {
+                Ok(time) => {
+                    timeout = time;
+                    println!("\nSetting timeout to {} seconds\n", time);
+                }
+                Err(err) => println!(
+                    "\nFailed to parse `set timeout <amount>` command (0 means unlimited): {:?}\n",
                     err
                 ),
             }
@@ -180,6 +195,7 @@ pub extern "C" fn rust_main() {
         let lib = lib.unwrap();
 
         // Run in a separate thread so that we can time and cancel it if needed.
+        let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
             // Setup the bump. Since this is a new thread, it should be a brand new bump.
             BUMP.with(|bump| {
@@ -247,8 +263,32 @@ pub extern "C" fn rust_main() {
                 }
                 println!("\n");
             }
+            tx.send(()).unwrap();
         });
-        handle.join().unwrap();
+
+        // Handle regoining and potentially cancelling the child thread.
+        if timeout <= 0 {
+            handle.join().unwrap();
+            continue;
+        }
+        if let Err(_) = rx.recv_timeout(Duration::from_secs(timeout)) {
+            println!(
+                "\n\nPlugin failed to exit within timeout of {} seconds.\nKilling!\n\n",
+                timeout
+            );
+            use libc::pthread_cancel;
+            use std::os::unix::thread::JoinHandleExt;
+
+            let raw_handle = handle.into_pthread_t();
+            unsafe {
+                // TODO: look into using pthread_kill to send a signal to the thread.
+                // Then catch the signal and call siglongjmp from it.
+                // That should let the thread properly exit.
+                pthread_cancel(raw_handle);
+            }
+        } else {
+            handle.join().unwrap();
+        }
     }
     _ = rl.save_history("/tmp/history.txt");
 }
