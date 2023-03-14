@@ -6,10 +6,10 @@ app "definitely-not-a-mem-hog"
 main : Task {} []
 main =
     # is this too wasteful for hello world? I just want 10MB.
-    cap = 10 * 1024 * 1024
+    cap = 10
     capStr = Num.toStr cap
 
-    Str.withCapacity cap
-    |> Str.concat "Hello, World!\nThis Str has a capacity of \(capStr) bytes!"
+    Str.withCapacity (cap * 1024 * 1024)
+    |> Str.concat "Hello, World!\nThis Str has a capacity of \(capStr) MB!"
     |> Stdout.line
 

@@ -265,7 +265,16 @@ pub unsafe extern "C" fn roc_alloc(size: usize, alignment: u32) -> *mut c_void {
     }) {
         Ok(alloc) => alloc.as_ptr() as _,
         Err(_) => {
-            MSG.with(|msg| *msg.borrow_mut() = "Plugin exceeded memory limit".to_string());
+            let (limit, used) = BUMP.with(|bump| {
+                let bump = bump.borrow();
+                (
+                    bump.allocation_limit().unwrap(),
+                    bump.allocated_bytes() + size,
+                )
+            });
+            let limit = limit / 1024 / 1024;
+            let used = used as f64 / 1024.0 / 1024.0;
+            MSG.with(|msg| *msg.borrow_mut() = format!("Plugin exceeded memory limit of {} MB.\nTotaly memory with new request would be {} MB.", limit, used));
             longjmp(JMPBUF.as_mut_ptr(), 2);
         }
     }
@@ -289,7 +298,16 @@ pub unsafe extern "C" fn roc_realloc(
             new_loc
         }
         Err(_) => {
-            MSG.with(|msg| *msg.borrow_mut() = "Plugin exceeded memory limit".to_string());
+            let (limit, used) = BUMP.with(|bump| {
+                let bump = bump.borrow();
+                (
+                    bump.allocation_limit().unwrap(),
+                    bump.allocated_bytes() + new_size,
+                )
+            });
+            let limit = limit / 1024 / 1024;
+            let used = used as f64 / 1024.0 / 1024.0;
+            MSG.with(|msg| *msg.borrow_mut() = format!("Plugin exceeded memory limit of {} MB.\nTotaly memory with new request would be {} MB.", limit, used));
             longjmp(JMPBUF.as_mut_ptr(), 2);
         }
     }
