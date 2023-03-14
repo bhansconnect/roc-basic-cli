@@ -87,14 +87,11 @@ pub extern "C" fn rust_main() {
     rl.set_helper(Some(helper));
     _ = rl.load_history("/tmp/history.txt");
 
-    // Set arbitrary starting limit for processes of 1MB.
-    BUMP.with(|bump| {
-        bump.borrow_mut().set_allocation_limit(Some(1024 * 1024));
-    });
-
     println!("Welcome to the pluggable basic-cli app runner!");
     println!("Enter the path to a roc app and what args to pass it.");
     println!("Ex: examples/args.roc div -n 12 -d 22\n");
+    // Set arbitrary starting limit for processes of 1MB.
+    let mut mem_limit_mb = 1;
     loop {
         // Request input.
         let readline = rl.readline(">> ");
@@ -122,17 +119,7 @@ pub extern "C" fn rust_main() {
         if let Some(rem) = input.trim().strip_prefix("set limit mb ") {
             match rem.trim().parse::<usize>() {
                 Ok(lim) => {
-                    BUMP.with(|bump| {
-                        // Completely create a new bump on mem limit change to ensure it is enforced.
-                        *bump.borrow_mut() = Bump::new();
-
-                        bump.borrow_mut().set_allocation_limit(if lim > 0 {
-                            Some(lim * 1024 * 1024)
-                        } else {
-                            None
-                        });
-                    });
-
+                    mem_limit_mb = lim;
                     println!("\nSetting mem limit to {} MB\n", lim);
                 }
                 Err(err) => println!(
@@ -192,69 +179,76 @@ pub extern "C" fn rust_main() {
         }
         let lib = lib.unwrap();
 
-        // Load needed app symbols.
-        let roc_main: libloading::Symbol<unsafe extern "C" fn(output: *mut u8)> = unsafe {
-            lib.get(b"roc__mainForHost_1_exposed_generic")
-                .expect("failed to load plugin functions")
-        };
-        let roc_main_size: libloading::Symbol<unsafe extern "C" fn() -> i64> = unsafe {
-            lib.get(b"roc__mainForHost_size")
-                .expect("failed to load plugin functions")
-        };
-        let call_fx: libloading::Symbol<
-            unsafe extern "C" fn(flags: *const u8, closure_data: *const u8, output: *mut u8),
-        > = unsafe {
-            lib.get(b"roc__mainForHost_1__Fx_caller")
-                .expect("failed to load plugin functions")
-        };
-        let size_fx_result: libloading::Symbol<unsafe extern "C" fn() -> i64> = unsafe {
-            lib.get(b"roc__mainForHost_1__Fx_result_size")
-                .expect("failed to load plugin functions")
-        };
+        // Run in a separate thread so that we can time and cancel it if needed.
+        let handle = std::thread::spawn(move || {
+            // Setup the bump. Since this is a new thread, it should be a brand new bump.
+            BUMP.with(|bump| {
+                bump.borrow_mut().set_allocation_limit(if mem_limit_mb > 0 {
+                    Some(mem_limit_mb * 1024 * 1024)
+                } else {
+                    None
+                });
+            });
 
-        // Reset the arena.
-        BUMP.with(|bump| {
-            bump.borrow_mut().reset();
-        });
+            unsafe {
+                // Load needed app symbols.
+                let roc_main: libloading::Symbol<unsafe extern "C" fn(output: *mut u8)> = lib
+                    .get(b"roc__mainForHost_1_exposed_generic")
+                    .expect("failed to load plugin functions");
+                let roc_main_size: libloading::Symbol<unsafe extern "C" fn() -> i64> = lib
+                    .get(b"roc__mainForHost_size")
+                    .expect("failed to load plugin functions");
+                let call_fx: libloading::Symbol<
+                    unsafe extern "C" fn(
+                        flags: *const u8,
+                        closure_data: *const u8,
+                        output: *mut u8,
+                    ),
+                > = lib
+                    .get(b"roc__mainForHost_1__Fx_caller")
+                    .expect("failed to load plugin functions");
+                let size_fx_result: libloading::Symbol<unsafe extern "C" fn() -> i64> = lib
+                    .get(b"roc__mainForHost_1__Fx_result_size")
+                    .expect("failed to load plugin functions");
 
-        // Run app with calls to plugin.
-        unsafe {
-            JMPBUF = MaybeUninit::uninit();
-            match setjmp(JMPBUF.as_mut_ptr()) {
-                0 => {
-                    let main_buffer = roc_alloc(roc_main_size() as usize, 8) as _;
-                    let closure_buffer = roc_alloc(size_fx_result() as usize, 8) as _;
+                // Run app with calls to plugin.
+                JMPBUF = MaybeUninit::uninit();
+                match setjmp(JMPBUF.as_mut_ptr()) {
+                    0 => {
+                        let main_buffer = roc_alloc(roc_main_size() as usize, 8) as _;
+                        let closure_buffer = roc_alloc(size_fx_result() as usize, 8) as _;
 
-                    roc_main(main_buffer);
-                    call_fx(
-                        // This flags pointer will never get dereferenced
-                        MaybeUninit::uninit().as_ptr(),
-                        main_buffer,
-                        closure_buffer,
-                    );
+                        roc_main(main_buffer);
+                        call_fx(
+                            // This flags pointer will never get dereferenced
+                            MaybeUninit::uninit().as_ptr(),
+                            main_buffer,
+                            closure_buffer,
+                        );
+                    }
+                    1 => {
+                        MSG.with(|msg| {
+                            println!("\nPlugin crashed with message:\n\t{}\n", msg.borrow());
+                        });
+                        println!("Cleaning up allocations and continuing...")
+                    }
+                    2 => {
+                        MSG.with(|msg| {
+                            println!("\n{}\n", msg.borrow());
+                        });
+                        println!("Cleaning up allocations and continuing...")
+                    }
+                    _ => {
+                        panic!("App recieved invalid setjmp value")
+                    }
                 }
-                1 => {
-                    MSG.with(|msg| {
-                        println!("\nPlugin crashed with message:\n\t{}\n", msg.borrow());
-                    });
-                    println!("Cleaning up allocations and continuing...")
+                if let Err(err) = lib.close() {
+                    println!("Failed to cleanup the plugin shared library: {:?}", err);
                 }
-                2 => {
-                    MSG.with(|msg| {
-                        println!("\n{}\n", msg.borrow());
-                    });
-                    println!("Cleaning up allocations and continuing...")
-                }
-                _ => {
-                    panic!("App recieved invalid setjmp value")
-                }
+                println!("\n");
             }
-        }
-        if let Err(err) = lib.close() {
-            println!("Failed to cleanup the plugin shared library: {:?}", err);
-        }
-
-        println!("\n");
+        });
+        handle.join().unwrap();
     }
     _ = rl.save_history("/tmp/history.txt");
 }
