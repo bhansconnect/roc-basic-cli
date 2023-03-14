@@ -92,8 +92,8 @@ pub extern "C" fn rust_main() {
     println!("Ex: examples/args.roc div -n 12 -d 22\n");
     // Set arbitrary starting limit for processes of 1MB.
     let mut mem_limit_mb = 1;
-    // Set default timeout of 600 seconds.
-    let mut timeout = 600;
+    // Set default timeout of 30 seconds.
+    let mut timeout = 30;
     loop {
         // Request input.
         let readline = rl.readline(">> ");
@@ -147,10 +147,8 @@ pub extern "C" fn rust_main() {
         println!("");
 
         // Process args.
-        let input_path = ARGS.with(|args| {
-            *args.borrow_mut() = input.trim().split(" ").map(|x| x.to_string()).collect();
-            args.borrow()[0].to_owned()
-        });
+        let args: Vec<String> = input.trim().split(" ").map(|x| x.to_string()).collect();
+        let input_path = args[0].to_owned();
         let input_path = Path::new(&input_path);
         if !input_path.is_file() {
             println!("Could not find input file\n\n");
@@ -204,6 +202,11 @@ pub extern "C" fn rust_main() {
                 } else {
                     None
                 });
+            });
+
+            // Setup args for this plugin.
+            ARGS.with(|thread_args| {
+                *thread_args.borrow_mut() = args;
             });
 
             unsafe {

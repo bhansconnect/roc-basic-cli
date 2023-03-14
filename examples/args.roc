@@ -46,13 +46,24 @@ main =
                 )
             |> Arg.subCommand "log"
 
-        Arg.choice [divCmd, logCmd]
+        fibCmd =
+            Arg.succeed Fib
+            |> Arg.withParser
+                (
+                    Arg.i64Option {
+                        long: "num",
+                        short: "n",
+                        help: "calculates the nth fibonacci number",
+                    }
+                )
+            |> Arg.subCommand "fib"
+
+        Arg.choice [divCmd, logCmd, fibCmd]
         |> Arg.program { name: "args-example", help: "A calculator example of the CLI platform argument parser" }
 
     when Arg.parseFormatted parser args is
         Ok cmd ->
             runCmd cmd
-            |> Num.toStr
             |> Stdout.line
 
         Err helpMenu ->
@@ -61,7 +72,21 @@ main =
 
 runCmd = \cmd ->
     when cmd is
-        Div n d -> n / d
+        Div n d ->
+            n / d
+            |> Num.toStr
         Log b n ->
             # log_b(n) = log_x(n) / log_x(b) for all x
             runCmd (Div (Num.log n) (Num.log b))
+        Fib n ->
+            n
+            |> Num.toU64
+            |> fib
+            |> Num.toStr
+
+# Intentionally slow fib.
+fib = \n ->
+    when n is
+        0 -> 0
+        1 -> 1
+        x -> fib (x - 1) + fib (x - 2)
