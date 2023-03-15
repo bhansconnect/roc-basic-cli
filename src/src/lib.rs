@@ -288,15 +288,14 @@ pub extern "C" fn rust_main() {
         if let Err(_) = rx.recv_timeout(Duration::from_secs(timeout)) {
             use std::os::unix::thread::JoinHandleExt;
 
-            let raw_handle = handle.into_pthread_t();
+            let raw_handle = handle.as_pthread_t();
             unsafe {
                 // Even though this is called `pthread_kill`, we are just using it to send a message and not kill the thread.
                 // The message will let the thread end cleanly.
                 libc::pthread_kill(raw_handle, libc::SIGUSR1);
             }
-        } else {
-            handle.join().unwrap();
         }
+        handle.join().unwrap();
     }
     _ = rl.save_history("/tmp/history.txt");
 }
