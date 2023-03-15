@@ -23,7 +23,7 @@ use rustyline::hint::HistoryHinter;
 use rustyline::{
     CompletionType, Config, Context, Editor, Helper, Highlighter, Hinter, Result, Validator,
 };
-use setjmp::{jmp_buf, longjmp, setjmp};
+use setjmp::{sigjmp_buf, siglongjmp, sigsetjmp};
 
 use libc::{c_char, c_int, c_uint, c_void, mode_t, off_t, pid_t, size_t};
 
@@ -37,7 +37,7 @@ static EXTENSION: &str = "so.1.0";
 
 // JMPBUF can not be wrapped in a RefCell, it will end up breaking rust.
 // Instead use the less safe direct `static mut`.
-static mut JMPBUF: MaybeUninit<jmp_buf> = MaybeUninit::uninit();
+static mut JMPBUF: MaybeUninit<sigjmp_buf> = MaybeUninit::uninit();
 
 thread_local!(static BUMP: RefCell<Bump> = RefCell::new(Bump::new()));
 thread_local!(static MSG: RefCell<String> = RefCell::new(String::new()));
@@ -195,6 +195,9 @@ pub extern "C" fn rust_main() {
         // Run in a separate thread so that we can time and cancel it if needed.
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
+            // Setup signal to catch timeouts.
+            unsafe { libc::signal(libc::SIGUSR1, handle_timeout as _) };
+
             // Setup the bump. Since this is a new thread, it should be a brand new bump.
             BUMP.with(|bump| {
                 bump.borrow_mut().set_allocation_limit(if mem_limit_mb > 0 {
@@ -232,7 +235,7 @@ pub extern "C" fn rust_main() {
 
                 // Run app with calls to plugin.
                 JMPBUF = MaybeUninit::uninit();
-                match setjmp(JMPBUF.as_mut_ptr()) {
+                match sigsetjmp(JMPBUF.as_mut_ptr(), 1) {
                     0 => {
                         let main_buffer = roc_alloc(roc_main_size() as usize, 8) as _;
                         let closure_buffer = roc_alloc(size_fx_result() as usize, 8) as _;
@@ -257,6 +260,13 @@ pub extern "C" fn rust_main() {
                         });
                         println!("Cleaning up allocations and continuing...")
                     }
+                    3 => {
+                        println!(
+                            "\nPlugin failed to finish within time limit of {} seconds.\nKilling!\n",
+                            timeout
+                        );
+                        println!("Cleaning up allocations and continuing...")
+                    }
                     _ => {
                         panic!("App recieved invalid setjmp value")
                     }
@@ -266,7 +276,8 @@ pub extern "C" fn rust_main() {
                 }
                 println!("\n");
             }
-            tx.send(()).unwrap();
+            // Ignore this error.
+            _ = tx.send(());
         });
 
         // Handle regoining and potentially cancelling the child thread.
@@ -275,25 +286,23 @@ pub extern "C" fn rust_main() {
             continue;
         }
         if let Err(_) = rx.recv_timeout(Duration::from_secs(timeout)) {
-            println!(
-                "\n\nPlugin failed to exit within timeout of {} seconds.\nKilling!\n\n",
-                timeout
-            );
-            use libc::pthread_cancel;
             use std::os::unix::thread::JoinHandleExt;
 
             let raw_handle = handle.into_pthread_t();
             unsafe {
-                // TODO: look into using pthread_kill to send a signal to the thread.
-                // Then catch the signal and call siglongjmp from it.
-                // That should let the thread properly exit.
-                pthread_cancel(raw_handle);
+                // Even though this is called `pthread_kill`, we are just using it to send a message and not kill the thread.
+                // The message will let the thread end cleanly.
+                libc::pthread_kill(raw_handle, libc::SIGUSR1);
             }
         } else {
             handle.join().unwrap();
         }
     }
     _ = rl.save_history("/tmp/history.txt");
+}
+
+unsafe extern "C" fn handle_timeout(_: libc::c_int) {
+    siglongjmp(JMPBUF.as_mut_ptr(), 3);
 }
 
 ///
@@ -318,7 +327,7 @@ pub unsafe extern "C" fn roc_alloc(size: usize, alignment: u32) -> *mut c_void {
             let limit = limit / 1024 / 1024;
             let used = used as f64 / 1024.0 / 1024.0;
             MSG.with(|msg| *msg.borrow_mut() = format!("Plugin exceeded memory limit of {} MB.\nTotaly memory with new request would be {} MB.", limit, used));
-            longjmp(JMPBUF.as_mut_ptr(), 2);
+            siglongjmp(JMPBUF.as_mut_ptr(), 2);
         }
     }
 }
@@ -351,7 +360,7 @@ pub unsafe extern "C" fn roc_realloc(
             let limit = limit / 1024 / 1024;
             let used = used as f64 / 1024.0 / 1024.0;
             MSG.with(|msg| *msg.borrow_mut() = format!("Plugin exceeded memory limit of {} MB.\nTotaly memory with new request would be {} MB.", limit, used));
-            longjmp(JMPBUF.as_mut_ptr(), 2);
+            siglongjmp(JMPBUF.as_mut_ptr(), 2);
         }
     }
 }
@@ -362,7 +371,7 @@ pub unsafe extern "C" fn roc_dealloc(_c_ptr: *mut c_void, _alignment: u32) {}
 #[no_mangle]
 pub unsafe extern "C" fn roc_panic(panic_msg: &RocStr, _tag_id: u32) {
     MSG.with(|msg| *msg.borrow_mut() = panic_msg.as_str().to_string());
-    longjmp(JMPBUF.as_mut_ptr(), 1);
+    siglongjmp(JMPBUF.as_mut_ptr(), 1);
 }
 
 #[cfg(unix)]
@@ -440,7 +449,7 @@ pub extern "C" fn roc_fx_setCwd(roc_path: &RocList<u8>) -> RocResult<(), ()> {
 #[no_mangle]
 pub unsafe extern "C" fn roc_fx_processExit(exit_code: u8) {
     MSG.with(|msg| *msg.borrow_mut() = format!("Plugin exited with code: {}", exit_code));
-    longjmp(JMPBUF.as_mut_ptr(), 2);
+    siglongjmp(JMPBUF.as_mut_ptr(), 2);
 }
 
 #[no_mangle]
