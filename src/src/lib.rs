@@ -196,7 +196,17 @@ pub extern "C" fn rust_main() {
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
             // Setup signal to catch timeouts.
-            unsafe { libc::signal(libc::SIGUSR1, handle_timeout as _) };
+            unsafe {
+                libc::signal(libc::SIGUSR1, handle_timeout as _);
+
+                // These are technically unnecessary when using Roc.
+                // Roc should never cause any of them (assuming the host and its effects aren't bug).
+                // But if this host is bugged, I have other problems anyway.
+                libc::signal(libc::SIGILL, handle_othersig as _);
+                libc::signal(libc::SIGSEGV, handle_othersig as _);
+                libc::signal(libc::SIGBUS, handle_othersig as _);
+                libc::signal(libc::SIGFPE, handle_othersig as _);
+            }
 
             // Setup the bump. Since this is a new thread, it should be a brand new bump.
             BUMP.with(|bump| {
@@ -304,6 +314,17 @@ unsafe extern "C" fn handle_timeout(_: libc::c_int) {
     siglongjmp(JMPBUF.as_mut_ptr(), 3);
 }
 
+unsafe extern "C" fn handle_othersig(sig: libc::c_int) {
+    let sig = match sig {
+        libc::SIGBUS => "SIGBUS".to_string(),
+        libc::SIGILL => "SIGILL".to_string(),
+        libc::SIGSEGV => "SIGSEGV".to_string(),
+        libc::SIGFPE => "SIGFPE".to_string(),
+        x => format!("{}", x),
+    };
+    MSG.with(|msg| *msg.borrow_mut() = format!("Plugin produced signal ({}) and crashed.", sig));
+    siglongjmp(JMPBUF.as_mut_ptr(), 2);
+}
 ///
 /// Roc required library functions.
 ///
