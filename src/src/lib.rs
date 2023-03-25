@@ -228,7 +228,7 @@ pub extern "C" fn rust_main() {
                     .get(b"roc__mainForHost_1_exposed_generic")
                     .expect("failed to load plugin functions");
                 let roc_main_size: libloading::Symbol<unsafe extern "C" fn() -> i64> = lib
-                    .get(b"roc__mainForHost_size")
+                    .get(b"roc__mainForHost_1_exposed_size")
                     .expect("failed to load plugin functions");
                 let call_fx: libloading::Symbol<
                     unsafe extern "C" fn(
@@ -237,10 +237,10 @@ pub extern "C" fn rust_main() {
                         output: *mut u8,
                     ),
                 > = lib
-                    .get(b"roc__mainForHost_1__Fx_caller")
+                    .get(b"roc__mainForHost_0_caller")
                     .expect("failed to load plugin functions");
                 let size_fx_result: libloading::Symbol<unsafe extern "C" fn() -> i64> = lib
-                    .get(b"roc__mainForHost_1__Fx_result_size")
+                    .get(b"roc__mainForHost_0_result_size")
                     .expect("failed to load plugin functions");
 
                 // Run app with calls to plugin.
